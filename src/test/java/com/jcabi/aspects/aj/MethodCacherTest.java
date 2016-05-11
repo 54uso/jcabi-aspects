@@ -29,50 +29,62 @@
  */
 package com.jcabi.aspects.aj;
 
+import com.jcabi.aspects.Cacheable;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import org.aspectj.lang.JoinPoint;
+import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.reflect.MethodSignature;
+import org.hamcrest.MatcherAssert;
+import org.hamcrest.Matchers;
+import org.junit.Test;
+import org.mockito.Mockito;
 
 /**
- * Utility methods that deal with JoinPoints.
- *
- * @author Krzysztof Krason (Krzysztof.Krason@gmail.com)
+ * Tests for {@link MethodCacher}.
+ * @author Nesterov Nikolay (nikolaynesterov@gmail.com)
  * @version $Id$
- * @since 0.7.22
+ * @since 1.0
  */
-final class JoinPointUtils {
-
+public final class MethodCacherTest {
     /**
-     * Utility class constructor.
+     * MethodCacher can support garbage collecting.
+     * @throws Throwable If something goes wrong
+     * @checkstyle IllegalThrowsCheck (3 lines)
      */
-    private JoinPointUtils() {
-        // intentionally left empty
+    @Test
+    public void supportsGarbageCollecting() throws Throwable {
+        final ProceedingJoinPoint point = Mockito.mock(
+                ProceedingJoinPoint.class
+        );
+        Mockito.when(point.proceed()).thenReturn(new Object());
+        final MethodCacher.Key key = Mockito.mock(
+                MethodCacher.Key.class
+        );
+        final MethodCacher.Tunnel tunnel = new MethodCacher.Tunnel(
+                point, key, false
+        );
+        final MethodSignature methodSignature = Mockito.mock(
+                MethodSignature.class
+        );
+        final Method method = Buzz.class.getMethod("get");
+        Mockito.when(methodSignature.getMethod()).thenReturn(method);
+        Mockito.when(point.getSignature()).thenReturn(methodSignature);
+        tunnel.through();
+        MatcherAssert.assertThat(tunnel.expired(), Matchers.equalTo(false));
+        tunnel.cached().clear();
+        MatcherAssert.assertThat(tunnel.expired(), Matchers.equalTo(true));
     }
 
     /**
-     * Calculate log target.
-     * @param point Proceeding point
-     * @return The target
+     * Test class for tests above.
      */
-    public static Object targetize(final JoinPoint point) {
-        Object tgt;
-        final Method method = MethodSignature.class
-            .cast(point.getSignature()).getMethod();
-        if (Modifier.isStatic(method.getModifiers())) {
-            tgt = method.getDeclaringClass();
-        } else {
-            tgt = point.getTarget();
+    private static class Buzz {
+        /**
+         * Return some object.
+         * @return Some object.
+         */
+        @Cacheable(forever = true)
+        public Object get() {
+            return new Object();
         }
-        return tgt;
-    }
-
-    /**
-     * Get current method.
-     * @param point Join point
-     * @return Current method in join point
-     */
-    public static Method currentMethod(final JoinPoint point) {
-        return ((MethodSignature) point.getSignature()).getMethod();
     }
 }

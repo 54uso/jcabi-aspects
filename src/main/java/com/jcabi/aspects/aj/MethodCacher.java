@@ -32,6 +32,7 @@ package com.jcabi.aspects.aj;
 import com.jcabi.aspects.Cacheable;
 import com.jcabi.aspects.Loggable;
 import com.jcabi.log.Logger;
+import java.lang.ref.SoftReference;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.Arrays;
@@ -67,21 +68,23 @@ public final class MethodCacher {
 
     /**
      * Calling tunnels.
-     * @checkstyle LineLength (2 lines)
      */
-    private final transient ConcurrentMap<MethodCacher.Key, MethodCacher.Tunnel> tunnels =
-        new ConcurrentHashMap<MethodCacher.Key, MethodCacher.Tunnel>(0);
+    private final transient
+        ConcurrentMap<MethodCacher.Key, MethodCacher.Tunnel> tunnels;
 
     /**
      * Save the keys of caches which need update.
      */
-    private final transient BlockingQueue<Key> updatekeys =
-        new LinkedBlockingQueue<MethodCacher.Key>();
+    private final transient BlockingQueue<Key> updatekeys;
 
     /**
      * Public ctor.
      */
     public MethodCacher() {
+        this.tunnels =
+            new ConcurrentHashMap<MethodCacher.Key, MethodCacher.Tunnel>(0);
+        this.updatekeys =
+            new LinkedBlockingQueue<MethodCacher.Key>();
         new UpdateMethodCacher(this.tunnels, this.updatekeys).start();
     }
 
@@ -159,12 +162,13 @@ public final class MethodCacher {
      * @param point Joint point
      * @since 0.7.14
      */
-    @Before(
-        // @checkstyle StringLiteralsConcatenation (3 lines)
-        "execution(* *(..))"
-        + " && (@annotation(com.jcabi.aspects.Cacheable.Flush)"
-        + " || @annotation(com.jcabi.aspects.Cacheable.FlushBefore))"
-    )
+    @Before
+        (
+            // @checkstyle StringLiteralsConcatenation (3 lines)
+            "execution(* *(..))"
+            + " && (@annotation(com.jcabi.aspects.Cacheable.Flush)"
+            + " || @annotation(com.jcabi.aspects.Cacheable.FlushBefore))"
+        )
     public void preflush(final JoinPoint point) {
         this.flush(point, "before the call");
     }
@@ -178,11 +182,12 @@ public final class MethodCacher {
      * @param point Joint point
      * @since 0.7.18
      */
-    @After(
-        // @checkstyle StringLiteralsConcatenation (2 lines)
-        "execution(* *(..))"
-        + " && @annotation(com.jcabi.aspects.Cacheable.FlushAfter)"
-    )
+    @After
+        (
+            // @checkstyle StringLiteralsConcatenation (2 lines)
+            "execution(* *(..))"
+            + " && @annotation(com.jcabi.aspects.Cacheable.FlushAfter)"
+        )
     public void postflush(final JoinPoint point) {
         this.flush(point, "after the call");
     }
@@ -254,9 +259,14 @@ public final class MethodCacher {
          */
         private transient long lifetime;
         /**
+         * Has non-null result?
+         */
+        private transient boolean hasresult;
+        /**
          * Cached value.
          */
-        private transient Object cached;
+        @SuppressWarnings("PMD.AvoidFieldNameMatchingMethodName")
+        private transient SoftReference<Object> cached;
 
         /**
          * Public ctor.
@@ -273,7 +283,7 @@ public final class MethodCacher {
 
         @Override
         public String toString() {
-            return Mnemos.toText(this.cached, true, false);
+            return Mnemos.toText(this.cached.get(), true, false);
         }
 
         /**
@@ -295,7 +305,9 @@ public final class MethodCacher {
         public synchronized Object through() throws Throwable {
             if (!this.executed) {
                 final long start = System.currentTimeMillis();
-                this.cached = this.point.proceed();
+                final Object result = this.point.proceed();
+                this.hasresult = result != null;
+                this.cached = new SoftReference<Object>(result);
                 final Method method = MethodSignature.class
                     .cast(this.point.getSignature())
                     .getMethod();
@@ -323,21 +335,25 @@ public final class MethodCacher {
                         Mnemos.toText(
                             method, this.point.getArgs(), true, false
                         ),
-                        Mnemos.toText(this.cached, true, false),
+                        Mnemos.toText(this.cached.get(), true, false),
                         System.currentTimeMillis() - start,
                         suffix
                     );
                 }
                 this.executed = true;
             }
-            return this.key.through(this.cached);
+            return this.key.through(this.cached.get());
         }
         /**
          * Is it expired already?
          * @return TRUE if expired
          */
         public boolean expired() {
-            return this.executed && this.lifetime < System.currentTimeMillis();
+            final boolean expired = this.lifetime < System.currentTimeMillis();
+            final boolean collected = this.executed
+                    && this.hasresult
+                    && this.cached.get() == null;
+            return this.executed && (expired || collected);
         }
 
         /**
@@ -347,20 +363,31 @@ public final class MethodCacher {
         public boolean asyncUpdate() {
             return this.async;
         }
+
+        /**
+         * Soft reference to cached object.
+         * Visible only for testing. Do not use directly.
+         * @return Soft reference to cached object.
+         */
+        @SuppressWarnings("PMD.DefaultPackage")
+        SoftReference<Object> cached() {
+            return this.cached;
+        }
     }
 
     /**
      * Key of a callable target.
+     * @checkstyle DesignForExtensionCheck (2 lines)
      */
-    protected static final class Key {
+    protected static class Key {
         /**
          * When instantiated.
          */
-        private final transient long start = System.currentTimeMillis();
+        private final transient long start;
         /**
          * How many times the key was already accessed.
          */
-        private final transient AtomicInteger accessed = new AtomicInteger();
+        private final transient AtomicInteger accessed;
         /**
          * Method.
          */
@@ -384,6 +411,8 @@ public final class MethodCacher {
          * @param point Joint point
          */
         Key(final JoinPoint point) {
+            this.start = System.currentTimeMillis();
+            this.accessed = new AtomicInteger();
             this.method = MethodSignature.class
                 .cast(point.getSignature()).getMethod();
             this.target = MethodCacher.Key.targetize(point);
@@ -399,20 +428,20 @@ public final class MethodCacher {
          * Get log level.
          * @return Log level of current method.
          */
-        public int getLevel() {
+        public final int getLevel() {
             return this.level;
         }
 
         @Override
-        public String toString() {
+        public final String toString() {
             return Mnemos.toText(this.method, this.arguments, true, false);
         }
         @Override
-        public int hashCode() {
+        public final int hashCode() {
             return this.method.hashCode();
         }
         @Override
-        public boolean equals(final Object obj) {
+        public final boolean equals(final Object obj) {
             final boolean equals;
             if (this == obj) {
                 equals = true;
@@ -430,6 +459,7 @@ public final class MethodCacher {
          * Send a result through, with necessary logging.
          * @param result The result to send through
          * @return The same result/object
+         * @checkstyle DesignForExtensionCheck (2 lines)
          */
         public Object through(final Object result) {
             final int hit = this.accessed.getAndIncrement();
@@ -452,7 +482,7 @@ public final class MethodCacher {
          * @param point Proceeding point
          * @return True if the target is the same
          */
-        public boolean sameTarget(final JoinPoint point) {
+        public final boolean sameTarget(final JoinPoint point) {
             return MethodCacher.Key.targetize(point).equals(this.target);
         }
         /**
@@ -473,5 +503,4 @@ public final class MethodCacher {
         }
 
     }
-
 }
